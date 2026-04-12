@@ -958,20 +958,30 @@ function persist() {
 // ═══════════════════════════════════════════
 // ── AUTO-POSTPONE OVERDUE TASKS ──
 // ═══════════════════════════════════════════
+function getNextWorkday() {
+  var d = new Date();
+  var day = d.getDay(); // 0=dom, 6=sab
+  if (day === 6) d.setDate(d.getDate() + 2); // sab → lun
+  else if (day === 0) d.setDate(d.getDate() + 1); // dom → lun
+  return toYMD(d);
+}
+
 function autoPostpone() {
+  var target = getNextWorkday();
   var moved = 0;
   tasks.forEach(function(t) {
     if (!t.completed && isOD(t.date) && !t.postponed) {
       t.postponed = true;
       t.originalDate = t.originalDate || t.date;
-      t.date = todayYMD;
+      t.date = target;
       moved++;
     }
   });
   if (moved > 0) {
     persist();
+    var dayLabel = (target === todayYMD) ? 'oggi' : 'lunedì';
     setTimeout(function(){
-      toast('⚡ ' + moved + ' task scadut' + (moved===1?'o':'i') + ' spostati ad oggi', 'warning', 4000);
+      toast('⚡ ' + moved + ' task scadut' + (moved===1?'o':'i') + ' spostati a ' + dayLabel, 'warning', 4000);
     }, 800);
   }
 }
