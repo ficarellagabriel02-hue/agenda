@@ -6,6 +6,21 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Agenda Personale</title>
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script>
+  firebase.initializeApp({
+    apiKey: "AIzaSyC3oC-zHY40c_jVUUAluB8OP6bFvvXeoLA",
+    authDomain: "agenda-27f66.firebaseapp.com",
+    databaseURL: "https://agenda-27f66-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "agenda-27f66",
+    storageBucket: "agenda-27f66.firebasestorage.app",
+    messagingSenderId: "221914512616",
+    appId: "1:221914512616:web:c2e52eefa855e974e89d5d"
+  });
+  var db = firebase.database();
+</script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -933,12 +948,17 @@ function isTD(y) { return y === todayYMD; }
 function persist() {
   localStorage.setItem('ag_events', JSON.stringify(events));
   localStorage.setItem('ag_tasks',  JSON.stringify(tasks));
+  // Sync to Firebase
+  if (typeof db !== 'undefined') {
+    db.ref('agenda/events').set(events);
+    db.ref('agenda/tasks').set(tasks);
+  }
 }
 
 // ═══════════════════════════════════════════
 // ── AUTO-POSTPONE OVERDUE TASKS ──
 // ═══════════════════════════════════════════
-(function autoPostpone() {
+function autoPostpone() {
   var moved = 0;
   tasks.forEach(function(t) {
     if (!t.completed && isOD(t.date) && !t.postponed) {
@@ -954,7 +974,8 @@ function persist() {
       toast('⚡ ' + moved + ' task scadut' + (moved===1?'o':'i') + ' spostati ad oggi', 'warning', 4000);
     }, 800);
   }
-})();
+}
+autoPostpone();
 
 // ═══════════════════════════════════════════
 // ── TOAST ──
@@ -1453,6 +1474,51 @@ document.getElementById('reportOverlay').addEventListener('click', function(e){ 
 document.addEventListener('keydown', function(e){
   if (e.key === 'Escape') { closeEvModal(); closeTkModal(); closeReportModal(); }
 });
+
+// ═══════════════════════════════════════════
+// ── FIREBASE REAL-TIME SYNC ──
+// ═══════════════════════════════════════════
+var _fbReady = false;
+if (typeof db !== 'undefined') {
+  // Load initial data from Firebase (overrides localStorage if exists)
+  db.ref('agenda').once('value').then(function(snap) {
+    var data = snap.val();
+    if (data) {
+      if (data.events && data.events.length) { events = data.events; localStorage.setItem('ag_events', JSON.stringify(events)); }
+      if (data.tasks && data.tasks.length)   { tasks = data.tasks; localStorage.setItem('ag_tasks', JSON.stringify(tasks)); }
+      autoPostpone();
+      renderCalendar();
+      if (selDate) renderSidebar();
+      updateProgress();
+    }
+    _fbReady = true;
+  });
+
+  // Listen for real-time changes from other devices
+  db.ref('agenda/events').on('value', function(snap) {
+    if (!_fbReady) return;
+    var d = snap.val();
+    if (d && JSON.stringify(d) !== JSON.stringify(events)) {
+      events = d;
+      localStorage.setItem('ag_events', JSON.stringify(events));
+      renderCalendar();
+      if (selDate) renderSidebar();
+      updateProgress();
+    }
+  });
+  db.ref('agenda/tasks').on('value', function(snap) {
+    if (!_fbReady) return;
+    var d = snap.val();
+    if (d && JSON.stringify(d) !== JSON.stringify(tasks)) {
+      tasks = d;
+      localStorage.setItem('ag_tasks', JSON.stringify(tasks));
+      autoPostpone();
+      renderCalendar();
+      if (selDate) renderSidebar();
+      updateProgress();
+    }
+  });
+}
 
 // ═══════════════════════════════════════════
 // ── INIT ──
