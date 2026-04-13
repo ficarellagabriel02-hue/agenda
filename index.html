@@ -947,8 +947,7 @@ function isOD(y) { return y < todayYMD; }
 function isTD(y) { return y === todayYMD; }
 
 // Write lock: prevents Firebase listener from overwriting during local save
-var _writing = false;
-var _writeTimer = null;
+var _writing = 0; // counter of active writes
 
 function persist() {
   // Filter nulls before saving
@@ -960,8 +959,7 @@ function persist() {
 
   // Sync to Firebase as objects keyed by ID (avoids null holes)
   if (typeof db !== 'undefined') {
-    _writing = true;
-    clearTimeout(_writeTimer);
+    _writing++;
 
     var evObj = {};
     events.forEach(function(e) { if (e && e.id) evObj[e.id] = e; });
@@ -972,10 +970,76 @@ function persist() {
       db.ref('agenda/events').set(evObj),
       db.ref('agenda/tasks').set(tkObj)
     ]).then(function() {
-      // Keep lock for 500ms to let listener settle
-      _writeTimer = setTimeout(function() { _writing = false; }, 500);
-    }).catch(function() {
-      _writing = false;
+      setTimeout(function() { _writing = Math.max(0, _writing - 1); }, 300);
+    }).catch(function(err) {
+      _writing = Math.max(0, _writing - 1);
+      console.error('Firebase write error:', err);
+      toast('❌ Errore di salvataggio — riprova', 'error', 3000);
+    });
+  }
+}
+
+// Save single task to Firebase (fast, doesn't rewrite everything)
+function persistTask(task) {
+  events = events.filter(Boolean);
+  tasks = tasks.filter(Boolean);
+  localStorage.setItem('ag_tasks', JSON.stringify(tasks));
+
+  if (typeof db !== 'undefined' && task && task.id) {
+    _writing++;
+    db.ref('agenda/tasks/' + task.id).set(task).then(function() {
+      setTimeout(function() { _writing = Math.max(0, _writing - 1); }, 300);
+    }).catch(function(err) {
+      _writing = Math.max(0, _writing - 1);
+      toast('❌ Errore di salvataggio — riprova', 'error', 3000);
+    });
+  }
+}
+
+// Save single event to Firebase (fast)
+function persistEvent(ev) {
+  events = events.filter(Boolean);
+  tasks = tasks.filter(Boolean);
+  localStorage.setItem('ag_events', JSON.stringify(events));
+
+  if (typeof db !== 'undefined' && ev && ev.id) {
+    _writing++;
+    db.ref('agenda/events/' + ev.id).set(ev).then(function() {
+      setTimeout(function() { _writing = Math.max(0, _writing - 1); }, 300);
+    }).catch(function(err) {
+      _writing = Math.max(0, _writing - 1);
+      toast('❌ Errore di salvataggio — riprova', 'error', 3000);
+    });
+  }
+}
+
+// Delete single item from Firebase (fast)
+function persistDeleteTask(id) {
+  tasks = tasks.filter(Boolean);
+  localStorage.setItem('ag_tasks', JSON.stringify(tasks));
+
+  if (typeof db !== 'undefined' && id) {
+    _writing++;
+    db.ref('agenda/tasks/' + id).remove().then(function() {
+      setTimeout(function() { _writing = Math.max(0, _writing - 1); }, 300);
+    }).catch(function(err) {
+      _writing = Math.max(0, _writing - 1);
+      toast('❌ Errore eliminazione — riprova', 'error', 3000);
+    });
+  }
+}
+
+function persistDeleteEvent(id) {
+  events = events.filter(Boolean);
+  localStorage.setItem('ag_events', JSON.stringify(events));
+
+  if (typeof db !== 'undefined' && id) {
+    _writing++;
+    db.ref('agenda/events/' + id).remove().then(function() {
+      setTimeout(function() { _writing = Math.max(0, _writing - 1); }, 300);
+    }).catch(function(err) {
+      _writing = Math.max(0, _writing - 1);
+      toast('❌ Errore eliminazione — riprova', 'error', 3000);
     });
   }
 }
@@ -1267,7 +1331,11 @@ function setFilter(f) { taskFilter = f; renderSidebar(); }
 // ═══════════════════════════════════════════
 function toggleTask(id) {
   var t = tasks.find(function(t){ return t.id===id; });
-  if (t) { t.completed = !t.completed; persist(); renderCalendar(); renderSidebar(); updateProgress(); }
+  if (t) {
+    t.completed = !t.completed;
+    persistTask(t);
+    renderCalendar(); renderSidebar(); updateProgress();
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -1275,14 +1343,16 @@ function toggleTask(id) {
 // ═══════════════════════════════════════════
 function deleteEv(id) {
   events = events.filter(function(e){ return e.id!==id; });
-  persist(); renderCalendar(); renderSidebar();
-  toast('Evento eliminato', 'warning');
+  persistDeleteEvent(id);
+  renderCalendar(); renderSidebar();
+  toast('✓ Evento eliminato', 'warning');
 }
 
 function deleteTk(id) {
   tasks = tasks.filter(function(t){ return t.id!==id; });
-  persist(); renderCalendar(); renderSidebar(); updateProgress();
-  toast('Task eliminato', 'warning');
+  persistDeleteTask(id);
+  renderCalendar(); renderSidebar(); updateProgress();
+  toast('✓ Task eliminato', 'warning');
 }
 
 // ═══════════════════════════════════════════
@@ -1340,12 +1410,19 @@ function saveEv() {
     notes:    document.getElementById('evNotes').value.trim()
   };
 
-  if (id) { var i = events.findIndex(function(e){ return e.id===id; }); events[i] = ev; }
-  else events.push(ev);
+  if (id) {
+    var i = events.findIndex(function(e){ return e.id===id; });
+    if (i >= 0) { events[i] = ev; }
+    else { events.push(ev); } // fallback: if not found, add as new
+  } else {
+    events.push(ev);
+  }
 
-  persist(); renderCalendar();
+  // UI update immediately, then save to Firebase in background
+  renderCalendar();
   if (selDate === date) renderSidebar();
   closeEvModal();
+  persistEvent(ev);
   toast(id ? '✓ Evento aggiornato' : '✓ Evento aggiunto', 'success');
 }
 
@@ -1399,12 +1476,19 @@ function saveTk() {
     originalDate: existing ? existing.originalDate : null
   };
 
-  if (id) { var i = tasks.findIndex(function(t){ return t.id===id; }); tasks[i] = t; }
-  else tasks.push(t);
+  if (id) {
+    var i = tasks.findIndex(function(t){ return t.id===id; });
+    if (i >= 0) { tasks[i] = t; }
+    else { tasks.push(t); } // fallback: if not found, add as new
+  } else {
+    tasks.push(t);
+  }
 
-  persist(); renderCalendar(); updateProgress();
+  // UI update immediately, then save to Firebase in background
+  renderCalendar(); updateProgress();
   if (selDate === date) renderSidebar();
   closeTkModal();
+  persistTask(t);
   toast(id ? '✓ Task aggiornato' : '✓ Task aggiunto', 'success');
 }
 
@@ -1549,9 +1633,8 @@ if (typeof db !== 'undefined') {
 
   // Listen for real-time changes from other devices
   db.ref('agenda/events').on('value', function(snap) {
-    if (!_fbReady || _writing) return;
+    if (!_fbReady || _writing > 0) return;
     var newEvents = fbToArray(snap.val());
-    // Only update if data actually changed
     if (JSON.stringify(newEvents) !== JSON.stringify(events)) {
       events = newEvents;
       localStorage.setItem('ag_events', JSON.stringify(events));
@@ -1559,7 +1642,7 @@ if (typeof db !== 'undefined') {
     }
   });
   db.ref('agenda/tasks').on('value', function(snap) {
-    if (!_fbReady || _writing) return;
+    if (!_fbReady || _writing > 0) return;
     var newTasks = fbToArray(snap.val());
     if (JSON.stringify(newTasks) !== JSON.stringify(tasks)) {
       tasks = newTasks;
