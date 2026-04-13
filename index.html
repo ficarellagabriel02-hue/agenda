@@ -915,8 +915,9 @@ body {
 // ═══════════════════════════════════════════
 // ── STATE ──
 // ═══════════════════════════════════════════
-var events = JSON.parse(localStorage.getItem('ag_events') || '[]');
-var tasks  = JSON.parse(localStorage.getItem('ag_tasks')  || '[]');
+// Fix: filter out any null entries from localStorage (caused by Firebase array gaps)
+var events = (JSON.parse(localStorage.getItem('ag_events') || '[]')).filter(Boolean);
+var tasks  = (JSON.parse(localStorage.getItem('ag_tasks')  || '[]')).filter(Boolean);
 
 var _now     = new Date();
 var curYear  = _now.getFullYear();
@@ -945,14 +946,45 @@ function esc(s)  { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').r
 function isOD(y) { return y < todayYMD; }
 function isTD(y) { return y === todayYMD; }
 
+// Write lock: prevents Firebase listener from overwriting during local save
+var _writing = false;
+var _writeTimer = null;
+
 function persist() {
+  // Filter nulls before saving
+  events = events.filter(Boolean);
+  tasks = tasks.filter(Boolean);
+
   localStorage.setItem('ag_events', JSON.stringify(events));
   localStorage.setItem('ag_tasks',  JSON.stringify(tasks));
-  // Sync to Firebase
+
+  // Sync to Firebase as objects keyed by ID (avoids null holes)
   if (typeof db !== 'undefined') {
-    db.ref('agenda/events').set(events);
-    db.ref('agenda/tasks').set(tasks);
+    _writing = true;
+    clearTimeout(_writeTimer);
+
+    var evObj = {};
+    events.forEach(function(e) { if (e && e.id) evObj[e.id] = e; });
+    var tkObj = {};
+    tasks.forEach(function(t) { if (t && t.id) tkObj[t.id] = t; });
+
+    Promise.all([
+      db.ref('agenda/events').set(evObj),
+      db.ref('agenda/tasks').set(tkObj)
+    ]).then(function() {
+      // Keep lock for 500ms to let listener settle
+      _writeTimer = setTimeout(function() { _writing = false; }, 500);
+    }).catch(function() {
+      _writing = false;
+    });
   }
+}
+
+// Helper: convert Firebase object/array to clean array
+function fbToArray(data) {
+  if (!data) return [];
+  if (Array.isArray(data)) return data.filter(Boolean);
+  return Object.values(data).filter(Boolean);
 }
 
 // ═══════════════════════════════════════════
@@ -1489,43 +1521,51 @@ document.addEventListener('keydown', function(e){
 // ── FIREBASE REAL-TIME SYNC ──
 // ═══════════════════════════════════════════
 var _fbReady = false;
+var _renderDebounce = null;
+
+function debouncedRender() {
+  clearTimeout(_renderDebounce);
+  _renderDebounce = setTimeout(function() {
+    renderCalendar();
+    if (selDate) renderSidebar();
+    updateProgress();
+  }, 100);
+}
+
 if (typeof db !== 'undefined') {
   // Load initial data from Firebase (overrides localStorage if exists)
   db.ref('agenda').once('value').then(function(snap) {
     var data = snap.val();
     if (data) {
-      if (data.events && data.events.length) { events = data.events; localStorage.setItem('ag_events', JSON.stringify(events)); }
-      if (data.tasks && data.tasks.length)   { tasks = data.tasks; localStorage.setItem('ag_tasks', JSON.stringify(tasks)); }
+      var fbEvents = fbToArray(data.events);
+      var fbTasks = fbToArray(data.tasks);
+      if (fbEvents.length) { events = fbEvents; localStorage.setItem('ag_events', JSON.stringify(events)); }
+      if (fbTasks.length)  { tasks = fbTasks; localStorage.setItem('ag_tasks', JSON.stringify(tasks)); }
       autoPostpone();
-      renderCalendar();
-      if (selDate) renderSidebar();
-      updateProgress();
+      debouncedRender();
     }
     _fbReady = true;
   });
 
   // Listen for real-time changes from other devices
   db.ref('agenda/events').on('value', function(snap) {
-    if (!_fbReady) return;
-    var d = snap.val();
-    if (d && JSON.stringify(d) !== JSON.stringify(events)) {
-      events = d;
+    if (!_fbReady || _writing) return;
+    var newEvents = fbToArray(snap.val());
+    // Only update if data actually changed
+    if (JSON.stringify(newEvents) !== JSON.stringify(events)) {
+      events = newEvents;
       localStorage.setItem('ag_events', JSON.stringify(events));
-      renderCalendar();
-      if (selDate) renderSidebar();
-      updateProgress();
+      debouncedRender();
     }
   });
   db.ref('agenda/tasks').on('value', function(snap) {
-    if (!_fbReady) return;
-    var d = snap.val();
-    if (d && JSON.stringify(d) !== JSON.stringify(tasks)) {
-      tasks = d;
+    if (!_fbReady || _writing) return;
+    var newTasks = fbToArray(snap.val());
+    if (JSON.stringify(newTasks) !== JSON.stringify(tasks)) {
+      tasks = newTasks;
       localStorage.setItem('ag_tasks', JSON.stringify(tasks));
       autoPostpone();
-      renderCalendar();
-      if (selDate) renderSidebar();
-      updateProgress();
+      debouncedRender();
     }
   });
 }
