@@ -549,6 +549,65 @@ body {
 }
 .report-btn:hover { background: rgba(123,47,255,0.08); border-color: var(--violet); color: var(--violet); box-shadow: var(--glow-violet); }
 
+/* ── POSTPONE BUTTON (progress bar) ── */
+.postpone-btn {
+  background: transparent;
+  border: 1px solid rgba(255,184,77,0.3);
+  color: var(--yellow);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-family: inherit; font-size: 11px; font-weight: 600;
+  cursor: pointer; transition: all var(--tr);
+  min-height: 26px; white-space: nowrap; letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+.postpone-btn:hover {
+  background: rgba(255,184,77,0.1);
+  border-color: var(--yellow);
+  box-shadow: 0 0 8px rgba(255,184,77,0.25);
+}
+.postpone-btn:active { transform: scale(0.96); }
+
+/* ── NL COMMAND BAR ── */
+.nl-bar-toggle {
+  background: transparent;
+  border: 1px solid rgba(123,47,255,0.3);
+  color: var(--violet-mid);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-family: inherit; font-size: 12px; font-weight: 500;
+  cursor: pointer; transition: all var(--tr);
+  min-height: 36px; white-space: nowrap;
+}
+.nl-bar-toggle:hover { background: rgba(123,47,255,0.08); border-color: var(--violet); color: var(--violet); }
+.nl-bar-toggle.active { background: rgba(123,47,255,0.15); border-color: var(--violet); color: var(--violet); }
+
+.nl-bar {
+  position: relative; z-index: 9; flex-shrink: 0;
+  display: flex; gap: 8px; align-items: center;
+  padding: 8px 20px;
+  background: rgba(17,19,51,0.95);
+  border-bottom: 1px solid rgba(123,47,255,0.25);
+}
+.nl-input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid rgba(123,47,255,0.25);
+  border-radius: var(--radius-sm);
+  color: var(--text); font-family: inherit;
+  font-size: 13px; padding: 8px 12px;
+  outline: none; transition: all var(--tr);
+}
+.nl-input:focus { border-color: var(--violet); box-shadow: 0 0 0 2px rgba(123,47,255,0.15); }
+.nl-input::placeholder { color: var(--text-muted); font-size: 12px; }
+.nl-hint {
+  font-size: 10px; color: var(--text-muted); white-space: nowrap;
+}
+@media (max-width: 600px) {
+  .nl-hint { display: none; }
+  .nl-bar { padding: 8px 14px; }
+}
+
 /* ── REPORT MODAL ── */
 .report-content {
   background: var(--bg);
@@ -675,6 +734,7 @@ body {
   <div class="app-title">⟨ Agenda ⟩</div>
   <div class="header-right">
     <div class="clock" id="clock">--:--:--</div>
+    <button class="nl-bar-toggle" id="nlToggleBtn" onclick="toggleNLBar()" title="Inserimento linguaggio naturale / Telegram">🤖 NL</button>
     <button class="report-btn" onclick="openReportModal()"><span class="desk">📊 </span>Report</button>
     <button class="btn btn-sm" onclick="openEvModal()">＋ Evento</button>
     <button class="btn btn-primary btn-sm" onclick="openTkModal()">＋ Task</button>
@@ -685,6 +745,21 @@ body {
 <div class="progress-wrap">
   <div class="progress-track"><div class="progress-fill" id="pFill"></div></div>
   <div class="progress-text" id="pText">Nessun task per oggi</div>
+  <button class="postpone-btn" onclick="manualPostpone()"
+          title="Sposta al prossimo giorno lavorativo tutte le task incomplete di oggi e precedenti">
+    ⚡ Riporta Task
+  </button>
+</div>
+
+<!-- NL BAR -->
+<div class="nl-bar" id="nlBar" style="display:none">
+  <span class="nl-hint">🤖</span>
+  <input type="text" class="nl-input" id="nlInput"
+         placeholder="Es: Domani chiama Marco · Lunedì alle 15 dentista · Segna fatta la task report · Riporta task incomplete"
+         onkeydown="if(event.key==='Enter') sendNLCommand()">
+  <button class="btn btn-sm"
+          style="background:linear-gradient(135deg,var(--violet),var(--cyan));border:none;color:#fff;flex-shrink:0"
+          onclick="sendNLCommand()">Invia</button>
 </div>
 
 <!-- MAIN -->
@@ -1052,36 +1127,282 @@ function fbToArray(data) {
 }
 
 // ═══════════════════════════════════════════
-// ── AUTO-POSTPONE OVERDUE TASKS ──
+// ── DATE LOGIC: NEXT WORKDAY ──
 // ═══════════════════════════════════════════
-function getNextWorkday() {
-  var d = new Date();
-  var day = d.getDay(); // 0=dom, 6=sab
-  if (day === 6) d.setDate(d.getDate() + 2); // sab → lun
-  else if (day === 0) d.setDate(d.getDate() + 1); // dom → lun
+// Restituisce il prossimo giorno lavorativo DOPO la data indicata.
+// Accetta una stringa YMD opzionale (default: oggi).
+// Avanza SEMPRE di almeno 1 giorno — non ritorna mai la data di partenza.
+// Salta sabato (6) e domenica (0).
+// Lun→Mar · Mar→Mer · Mer→Gio · Gio→Ven · Ven→Lun · Sab→Lun · Dom→Lun
+function getNextWorkday(fromDate) {
+  // Costruiamo la data con orario fisso a mezzogiorno per evitare problemi DST
+  var d = fromDate
+    ? new Date(String(fromDate).replace(/-/g, '/') + ' 12:00:00')
+    : new Date();
+  d.setDate(d.getDate() + 1);                     // avanza almeno 1 giorno
+  while (d.getDay() === 0 || d.getDay() === 6) {  // salta weekend
+    d.setDate(d.getDate() + 1);
+  }
   return toYMD(d);
 }
 
+// ═══════════════════════════════════════════
+// ── AUTO-POSTPONE OVERDUE TASKS ──
+// ═══════════════════════════════════════════
+// Sposta al prossimo giorno lavorativo tutte le task incomplete con data < oggi.
+// Non usa il flag `postponed` come guardia (era il bug originale): una task
+// già rimandato in passato e ancora scaduta DEVE essere riportata di nuovo.
+// Il duplicato è prevenuto dalla condizione isOD() stessa: una task correttamente
+// spostata a domani non è più "overdue" oggi, quindi non viene toccata.
 function autoPostpone() {
-  var target = getNextWorkday();
-  var moved = 0;
+  var target = getNextWorkday(); // prossimo lavorativo dopo oggi (mai oggi stesso)
+  var moved  = 0;
   tasks.forEach(function(t) {
-    if (!t.completed && isOD(t.date) && !t.postponed) {
-      t.postponed = true;
+    if (!t.completed && isOD(t.date)) {
+      t.postponed    = true;
       t.originalDate = t.originalDate || t.date;
-      t.date = target;
+      t.date         = target;
       moved++;
     }
   });
   if (moved > 0) {
     persist();
-    var dayLabel = (target === todayYMD) ? 'oggi' : 'lunedì';
-    setTimeout(function(){
-      toast('⚡ ' + moved + ' task scadut' + (moved===1?'o':'i') + ' spostati a ' + dayLabel, 'warning', 4000);
+    setTimeout(function() {
+      toast(
+        '⚡ ' + moved + ' task scadut' + (moved === 1 ? 'o' : 'i') +
+        ' spostati a ' + cap(fmtLong(target)),
+        'warning', 4000
+      );
     }, 800);
   }
 }
-autoPostpone();
+// Non eseguiamo autoPostpone() qui in modo diretto: se Firebase è disponibile,
+// aspettiamo i dati Firebase (fonte di verità) prima di agire.
+// Se Firebase NON è disponibile, eseguiamo sui dati localStorage.
+if (typeof db === 'undefined') { autoPostpone(); }
+
+// ═══════════════════════════════════════════
+// ── MANUAL POSTPONE ──
+// ═══════════════════════════════════════════
+// Sposta al prossimo lavorativo TUTTE le task incomplete con data <= oggi
+// (include sia le scadute che quelle di oggi stesso).
+// Non crea duplicati: una task già su "domani" non viene toccata.
+// Aggiorna UI e storage in modo sincrono.
+function manualPostpone() {
+  var target = getNextWorkday();
+  var moved  = 0;
+  tasks.forEach(function(t) {
+    if (!t.completed && t.date <= todayYMD && t.date !== target) {
+      t.postponed    = true;
+      t.originalDate = t.originalDate || t.date;
+      t.date         = target;
+      moved++;
+    }
+  });
+  if (moved > 0) {
+    persist();
+    renderCalendar();
+    if (selDate) renderSidebar();
+    updateProgress();
+    toast(
+      '⚡ ' + moved + ' task spostati a ' + cap(fmtLong(target)),
+      'warning', 4000
+    );
+  } else {
+    toast('Nessun task incompleto da spostare', 'success', 2200);
+  }
+}
+
+// ═══════════════════════════════════════════
+// ── NL COMMAND BAR (+ base Telegram parser) ──
+// ═══════════════════════════════════════════
+var _nlBarOpen = false;
+
+function toggleNLBar() {
+  _nlBarOpen = !_nlBarOpen;
+  var bar = document.getElementById('nlBar');
+  var btn = document.getElementById('nlToggleBtn');
+  bar.style.display = _nlBarOpen ? 'flex' : 'none';
+  btn.classList.toggle('active', _nlBarOpen);
+  if (_nlBarOpen) {
+    setTimeout(function() { document.getElementById('nlInput').focus(); }, 50);
+  }
+}
+
+// ── NL PARSER ──────────────────────────────
+// Riconosce intenti e dati da frasi italiane naturali.
+// Usato sia dalla barra NL interna che da un eventuale webhook Telegram.
+function parseNLMessage(text) {
+  var raw   = text.trim();
+  var lower = raw.toLowerCase();
+
+  // ── INTENT ──────────────────────────────
+  var intent = 'task'; // default
+
+  if (/\b(sposta|porta a domani|rimanda|rinvia|riporta)\b.*(task|tutto|incomplet|non completat)/i.test(lower) ||
+      /\b(riporta task|porta a domani le task)\b/i.test(lower)) {
+    return { intent: 'postponeAll' };
+  }
+
+  if (/\b(segna (come )?fatt[ao]|complet[ao]|chius[ao]|marcata? (come )?fatt[ao]|ho fatto|fatto)\b/i.test(lower)) {
+    intent = 'complete';
+  } else if (/\b(evento|dentista|riunione|meeting|appuntamento|incontro|visita|colloquio|conferenza|pranzo con|cena con)\b/i.test(lower)) {
+    intent = 'event';
+  } else if (/\b(aggiungi|crea|ricordami|ricorda|metti|inserisci|nuovo task|nuova task)\b/i.test(lower)) {
+    intent = /\b(evento|appuntamento|riunione|meeting)\b/i.test(lower) ? 'event' : 'task';
+  }
+
+  // ── DATE ────────────────────────────────
+  var date = null;
+  var today = new Date();
+
+  if (/\bdomani\b/i.test(lower)) {
+    var d = new Date(today); d.setDate(d.getDate() + 1); date = toYMD(d);
+  } else if (/\bdopodomani\b/i.test(lower)) {
+    var d = new Date(today); d.setDate(d.getDate() + 2); date = toYMD(d);
+  } else if (/\boggi\b/i.test(lower)) {
+    date = todayYMD;
+  } else {
+    // Giorno della settimana (es. "lunedì", "venerdì prossimo")
+    var dayMap = {
+      'lunedì':1,'lunedi':1,'martedì':2,'martedi':2,
+      'mercoledì':3,'mercoledi':3,'giovedì':4,'giovedi':4,
+      'venerdì':5,'venerdi':5,'sabato':6,'domenica':0
+    };
+    for (var dn in dayMap) {
+      if (new RegExp('\\b' + dn + '\\b', 'i').test(lower)) {
+        var targetDow = dayMap[dn];
+        var d = new Date(today);
+        var diff = targetDow - d.getDay();
+        if (diff <= 0) diff += 7;
+        d.setDate(d.getDate() + diff);
+        date = toYMD(d);
+        break;
+      }
+    }
+    if (!date) {
+      // "il 15", "15 aprile", "15/04"
+      var mMatch = lower.match(/\b(\d{1,2})\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\b/i);
+      if (mMatch) {
+        var monthIdx = {gennaio:0,febbraio:1,marzo:2,aprile:3,maggio:4,giugno:5,luglio:6,agosto:7,settembre:8,ottobre:9,novembre:10,dicembre:11};
+        var mo = monthIdx[mMatch[2].toLowerCase()];
+        var yr = today.getFullYear();
+        var d  = new Date(yr, mo, parseInt(mMatch[1], 10));
+        if (d <= today) d.setFullYear(yr + 1);
+        date = toYMD(d);
+      }
+      // "il 15" senza mese
+      if (!date) {
+        var numMatch = lower.match(/\bil?\s+(\d{1,2})\b/);
+        if (numMatch) {
+          var day = parseInt(numMatch[1], 10);
+          var d   = new Date(today.getFullYear(), today.getMonth(), day);
+          if (d <= today) d.setMonth(d.getMonth() + 1);
+          date = toYMD(d);
+        }
+      }
+    }
+  }
+  if (!date) date = todayYMD;
+
+  // ── TIME ────────────────────────────────
+  var time = null;
+  var tMatch = lower.match(/\balle?\s+(\d{1,2})(?:[:\.](\d{2}))?\b/);
+  if (tMatch) time = tMatch[1].padStart(2,'0') + ':' + (tMatch[2] || '00');
+  if (!time && /\bmattina\b/i.test(lower))     time = '09:00';
+  if (!time && /\bpomeriggio\b/i.test(lower))  time = '15:00';
+  if (!time && /\bsera\b/i.test(lower))        time = '20:00';
+
+  // ── PRIORITY ────────────────────────────
+  var priority = 'media';
+  if (/\b(urgent[ei]|importantissim[ao]|alta priorit|subito|immediat|asap)\b/i.test(lower)) priority = 'alta';
+  else if (/\b(bassa priorit|quando puoi|senza fretta|opzional)\b/i.test(lower)) priority = 'bassa';
+
+  // ── TITLE: rimuove le parole-chiave di contesto ──
+  var title = raw;
+  var strips = [
+    /\b(aggiungi|crea(re)?|ricordami di?|ricorda di?|metti|inserisci|nuovo task|nuova task)\s*/gi,
+    /\b(segna (come )?fatt[ao]|complet[ao]|chius[ao]|marco (come )?fatt[ao]|ho fatto|fatto)\s*/gi,
+    /\b(task|evento|appuntamento)\s*/gi,
+    /\b(domani|dopodomani|oggi)\b/gi,
+    /\b(lunedì|lunedi|martedì|martedi|mercoledì|mercoledi|giovedì|giovedi|venerdì|venerdi|sabato|domenica)\b/gi,
+    /\b\d{1,2}\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\b/gi,
+    /\bil?\s+\d{1,2}\b/gi,
+    /\balle?\s+\d{1,2}(?:[:.]\d{2})?\b/gi,
+    /\b(mattina|pomeriggio|sera)\b/gi,
+    /\b(urgent[ei]|alta priorit\w*|bassa priorit\w*|asap)\b/gi
+  ];
+  strips.forEach(function(re) { title = title.replace(re, ' '); });
+  title = title.replace(/\s+/g, ' ').trim();
+  if (title) title = title.charAt(0).toUpperCase() + title.slice(1);
+
+  return { intent: intent, title: title, date: date, time: time, priority: priority };
+}
+
+// ── EXECUTE NL COMMAND ──────────────────────
+function executeNLCommand(parsed) {
+  if (!parsed) return;
+
+  if (parsed.intent === 'postponeAll') {
+    manualPostpone();
+    return;
+  }
+
+  if (!parsed.title) {
+    toast('Non ho capito il titolo. Riprova con più dettagli.', 'warning', 3000);
+    return;
+  }
+
+  if (parsed.intent === 'complete') {
+    var q = parsed.title.toLowerCase();
+    var match = tasks.find(function(t) {
+      return !t.completed && t.title.toLowerCase().indexOf(q) !== -1;
+    });
+    if (match) {
+      match.completed = true;
+      persistTask(match);
+      renderCalendar(); renderSidebar(); updateProgress();
+      toast('✓ Task completato: ' + match.title, 'success');
+    } else {
+      toast('Task non trovata: "' + parsed.title + '"', 'error', 3500);
+    }
+    return;
+  }
+
+  if (parsed.intent === 'event') {
+    var ev = {
+      id: uid(), title: parsed.title, date: parsed.date,
+      start: parsed.time || '', end: '', category: 'lavoro', notes: ''
+    };
+    events.push(ev);
+    persistEvent(ev);
+    renderCalendar();
+    if (selDate === ev.date) renderSidebar();
+    toast('📅 Evento: ' + ev.title + ' — ' + ev.date + (ev.start ? ' ' + ev.start : ''), 'success');
+    return;
+  }
+
+  // Default: crea task
+  var tk = {
+    id: uid(), title: parsed.title, date: parsed.date,
+    priority: parsed.priority, completed: false, postponed: false, originalDate: null
+  };
+  tasks.push(tk);
+  persistTask(tk);
+  renderCalendar(); updateProgress();
+  if (selDate === tk.date) renderSidebar();
+  toast('✓ Task: ' + tk.title + ' — ' + tk.date + ' [' + tk.priority + ']', 'success');
+}
+
+function sendNLCommand() {
+  var input = document.getElementById('nlInput');
+  var text  = input.value.trim();
+  if (!text) return;
+  var parsed = parseNLMessage(text);
+  executeNLCommand(parsed);
+  input.value = '';
+  input.focus();
+}
 
 // ═══════════════════════════════════════════
 // ── TOAST ──
@@ -1624,8 +1945,8 @@ if (typeof db !== 'undefined') {
       var fbEvents = fbToArray(data.events);
       var fbTasks = fbToArray(data.tasks);
       if (fbEvents.length) { events = fbEvents; localStorage.setItem('ag_events', JSON.stringify(events)); }
-      if (fbTasks.length)  { tasks = fbTasks; localStorage.setItem('ag_tasks', JSON.stringify(tasks)); }
-      autoPostpone();
+      if (fbTasks.length)  { tasks  = fbTasks;  localStorage.setItem('ag_tasks',  JSON.stringify(tasks));  }
+      autoPostpone(); // unico punto di esecuzione quando Firebase è disponibile
       debouncedRender();
     }
     _fbReady = true;
